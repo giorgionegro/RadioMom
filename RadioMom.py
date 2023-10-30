@@ -1,8 +1,11 @@
 # discord bot that play music when /play command is used
+
 import discord
 from discord.utils import get
-import youtube_dl
 from youtube_search import YoutubeSearch as ytSearch
+import yt_dlp
+import requests as rq
+import time
 
 intents = discord.Intents.default()
 bot = discord.Bot(intents=intents)
@@ -16,18 +19,22 @@ ydl_opts = {
         'preferredquality': '192',
     }],
 }
-ytdl = youtube_dl.YoutubeDL(ydl_opts)
+
+ytdl = yt_dlp.YoutubeDL(ydl_opts)
 
 successColor = 0x00ff00
 errorColor = 0xff0000
+infoColor = 0x057cfc
 
 queueOfGuilds = {}
 playerMessagesOfGuilds = {}
+volumeOfGuilds = {}
 logs = open('logs.txt', 'w', encoding='utf-8')
 
 
 def printOn(out: str):
-    print(out)
+    timeStr = time.strftime("[%d-%m-%Y, %H:%M:%S]", time.localtime())
+    print(f"{timeStr}{out}")
     # rout = out + '\n'
     # logs.write(rout)
 
@@ -36,8 +43,8 @@ async def inputC():
     command_input = input()
     if command_input == 'list':
         for guild in queueOfGuilds.keys():
-            queue = queueOfGuilds[guild]
-            for video in queue:
+            queue_list = queueOfGuilds[guild]
+            for video in queue_list:
                 print(video['title'])
     return command_input
 
@@ -52,24 +59,46 @@ async def CLI():
 @bot.event
 async def on_ready():
     printOn('Bot is ready.')
+    printOn("[cleaning] : start")
+    channels = bot.get_all_channels()
+    for channel in channels:
+        if channel.type.name == 'text':
+            printOn(f"[cleaning][{channel.guild}] : {channel.name}")
+            number = await cleanMessages(channel)
+            printOn(f"      [cleaning][{channel.guild}] : cleaned {number} on {channel.name}")
+    printOn("[cleaning] : end")
 
 
-@bot.command(desctiption='This command plays music', response_timeout=60)
+async def cleanMessages(channel):
+    messages = await channel.history(limit=300).flatten()
+    i = 0
+    for message in messages:
+        # if message.clean_content.startswith("/") or message.clean_content.startswith("!") or message.clean_content.startswith(">") or message.clean_content.startswith("\\") or message.clean_content.startswith("."):
+        #     i += 1
+        #     await message.delete()
+        if message.author.id == botId:
+            i += 1
+            await message.delete()
+    return i
+
+
+@bot.command(desctiption='This command search and add music to queue', response_timeout=60)
 async def play(ctx, query: str):
     printOn(f"[/play][{ctx.guild}] : {query}")
-    if ctx.author.voice.channel is not None:
-        await ctx.respond(embed=buildRespondEmbed("Searching"), delete_after=5)
-        await playCommand(ctx=ctx, query=query)
-    else:
-        await ctx.respond(embed=buildErrorEmbed("You must be connected to a voice channel"), delete_after=5)
+    if ctx.author.voice is not None:
+        if ctx.author.voice.channel is not None:
+            await ctx.respond(embed=buildMessageEmbed("🔎 Searching"), delete_after=5)
+            await playCommand(ctx=ctx, query=query)
+            return
+
+    await ctx.respond(embed=buildErrorEmbed("You must be connected to a voice channel"), delete_after=5)
 
 
-# skip command
 @bot.command(description='This command skips the current song')
 async def skip(ctx):
     printOn(f"[/skip][{ctx.guild}]")
     if checkOwnership(guild=ctx.guild, author=ctx.author):
-        await ctx.respond(embed=buildRespondEmbed("Skipping track"), delete_after=5)
+        await ctx.respond(embed=buildMessageEmbed("Skipping track"), delete_after=5)
         stopPlayer(ctx.guild)
     else:
         await ctx.respond(embed=buildNotOwnerEmbed(),
@@ -81,7 +110,7 @@ async def skip(ctx):
 async def stop(ctx):
     printOn(f"[/stop][{ctx.guild}]")
     if checkOwnership(guild=ctx.guild, author=ctx.author):
-        await ctx.respond(embed=buildRespondEmbed("Stopping player"), delete_after=5)
+        await ctx.respond(embed=buildMessageEmbed("Stopping player"), delete_after=5)
         await stopCommand(guild=ctx.guild)
     else:
         await ctx.respond(embed=buildNotOwnerEmbed(),
@@ -93,7 +122,7 @@ async def stop(ctx):
 async def pause(ctx):
     printOn(f"[/pause][{ctx.guild}]")
     if checkOwnership(guild=ctx.guild, author=ctx.author):
-        await ctx.respond(embed=buildRespondEmbed("Pausing player"), delete_after=5)
+        await ctx.respond(embed=buildMessageEmbed("Pausing player"), delete_after=5)
         pauseCommand(guild=ctx.guild)
     else:
         await ctx.respond(embed=buildNotOwnerEmbed(),
@@ -104,7 +133,7 @@ async def pause(ctx):
 async def resume(ctx):
     printOn(f"[/resume][{ctx.guild}]")
     if checkOwnership(guild=ctx.guild, author=ctx.author):
-        await ctx.respond(embed=buildRespondEmbed("Resuming player"), delete_after=5)
+        await ctx.respond(embed=buildMessageEmbed("Resuming player"), delete_after=5)
         resumeCommand(guild=ctx.guild)
     else:
         await ctx.respond(embed=buildNotOwnerEmbed(),
@@ -134,7 +163,7 @@ async def disconnect(ctx):
     printOn(f"[/disconnect][{ctx.guild}]")
     if checkOwnership(guild=ctx.guild, author=ctx.author):
         await disconnectCommand(guild=ctx.guild)
-        await ctx.respond(embed=buildRespondEmbed("Bye Bye 👋🏼"), delete_after=10)
+        await ctx.respond(embed=buildMessageEmbed("Bye Bye 👋🏼"), delete_after=10)
     else:
         await ctx.respond(embed=buildNotOwnerEmbed(),
                           delete_after=5)
@@ -169,6 +198,29 @@ async def clear(ctx):
                           delete_after=5)
 
 
+@bot.command(description="This command put music on top of the queue and skip the current song")
+async def playnow(ctx, query: str):
+    printOn(f"[/playNow][{ctx.guild}] : {query}")
+    if ctx.author.voice is not None:
+        if ctx.author.voice.channel is not None:
+            await ctx.respond(embed=buildMessageEmbed("🔎 Searching"), delete_after=5)
+            await playNowCommand(ctx=ctx, query=query)
+            return
+
+    await ctx.respond(embed=buildErrorEmbed("You must be connected to a voice channel"), delete_after=5)
+
+
+@bot.command(description="This command modify the volume of the player, be careful")
+async def volume(ctx, val: int):
+    printOn(f"[/volume][{ctx.guild}] : {val}")
+    if checkOwnership(guild=ctx.guild, author=ctx.author):
+        embed = await volumeCommand(ctx.guild, val)
+        await ctx.respond(embed=embed, delete_after=5)
+    else:
+        await ctx.respond(embed=buildNotOwnerEmbed(),
+                          delete_after=5)
+
+
 @bot.event
 async def on_reaction_add(reaction, user):
     if checkOwnership(guild=reaction.message.guild, author=user):
@@ -188,6 +240,7 @@ async def on_voice_state_update(member, before, after):
         if before.channel == voice.channel and after.channel is None:
             if len(voice.channel.voice_states) == 1:
                 if botId in voice.channel.voice_states:
+                    printOn(f'[/aloneInChannel][{member.guild}]')
                     await disconnectCommand(member.guild)
 
 
@@ -199,14 +252,31 @@ def checkOwnership(guild, author):
     return False
 
 
+async def volumeCommand(guild, val):
+    if 150 >= val >= 0:
+        voice = get(bot.voice_clients, guild=guild)
+        if voice is not None:
+            if voice.source is not None:
+                volumeOfGuilds[guild] = val
+                voice.source.volume = (0.002 * val)
+                if guild in playerMessagesOfGuilds:
+                    message = playerMessagesOfGuilds[guild]
+                    embed = message.embeds[0]
+                    embed.fields[-1].value = f"`{val}%`"
+                    await message.edit(embeds=[embed])
+            return buildSuccessEmbed("Volume set for this channel")
+        else:
+            return buildErrorEmbed("There are no song currently playing")
+    else:
+        return buildErrorEmbed("Volume must be between 150 and 0")
+
+
 async def playCommand(ctx, query):
     printOn(f"[playCommand][{ctx.guild}]")
     await tryConnect(ctx=ctx)
-    videoDataList = getVideoData(query=query)
+    videoDataList = getVideoData(query=query, guildId=ctx.guild.id, authorId=ctx.author.id)
     if videoDataList is not None:
-        for video in videoDataList:
-            video['requestedBy'] = f"<@{ctx.author.id}>"
-        embed = updateQueue(guild=ctx.guild, videoDataList=videoDataList)
+        embed = updateQueue(guild=ctx.guild, videoDataList=videoDataList, onTop=False)
         await ctx.respond(embed=embed, delete_after=15)
         voice = get(bot.voice_clients, guild=ctx.guild)
         if voice.is_playing():
@@ -221,6 +291,27 @@ async def playCommand(ctx, query):
                 printOn(f"    [playCommand][{ctx.guild}] : Get None VideoTrack")
     else:
         printOn(f"    [playCommand][{ctx.guild}] : VideoData not found")
+
+
+async def playNowCommand(ctx, query):
+    printOn(f"[playNowCommand][{ctx.guild}]")
+    await tryConnect(ctx=ctx)
+    videoDataList = getVideoData(query=query, guildId=ctx.guild.id, authorId=ctx.author.id)
+    if videoDataList is not None:
+        embed = updateQueue(guild=ctx.guild, videoDataList=videoDataList, onTop=True)
+        await ctx.respond(embed=embed, delete_after=15)
+        voice = get(bot.voice_clients, guild=ctx.guild)
+        if voice.is_playing():
+            await skipCommand(guild=ctx.guild)
+        else:
+            videoTrack = popVideoTrack(guild=ctx.guild)
+            if videoTrack is not None:
+                playPlayer(guild=ctx.guild, video_data=videoTrack)
+                await updatePlayerMessage(guild=ctx.guild, video_data=videoTrack, channelId=ctx.channel_id)
+            else:
+                printOn(f"    [playNowCommand][{ctx.guild}] : Get None VideoTrack")
+    else:
+        printOn(f"    [playNowCommand][{ctx.guild}] : VideoData not found")
 
 
 async def skipCommand(guild):
@@ -322,10 +413,14 @@ async def deletePlayerMessage(guild):
 def playPlayer(guild, video_data):
     printOn(f"[playPlayer][{guild}]")
     try:
+        volume_val = 0.10
+        if guild in volumeOfGuilds:
+            volume_val = 0.002 * volumeOfGuilds[guild]
+            printOn(f"      [playPlayer][{guild}] : Use set volume : {volume_val}")
         voice = get(bot.voice_clients, guild=guild)
-        voice.play(discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(video_data['url'])),
+        voice.play(discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(video_data['url'],before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5")),
                    after=lambda e: songEnd(guild))
-        voice.source = discord.PCMVolumeTransformer(voice.source, volume=0.07)
+        voice.source = discord.PCMVolumeTransformer(voice.source, volume=volume_val)
     except discord.ClientException:
         printOn(f"    [playPlayer][{guild}] : Already playing audio or not connected")
     except TypeError:
@@ -339,7 +434,10 @@ async def updatePlayerMessage(guild, video_data, channelId):
     printOn(f"[updatePlayerMessage][{guild}]")
     await deletePlayerMessage(guild)
     try:
-        message = await bot.get_channel(channelId).send(embed=buildPlayerEmbeds(video_data))
+        volume_val = 50
+        if guild in volumeOfGuilds:
+            volume_val = volumeOfGuilds[guild]
+        message = await bot.get_channel(channelId).send(embed=buildPlayerEmbeds(video_data, int(volume_val)))
         await message.add_reaction("⏸")
         await message.add_reaction("▶️")  # Play/Pause button
         await message.add_reaction("⏭️")  # Skip button
@@ -353,28 +451,49 @@ async def tryConnect(ctx):
     printOn(f"[tryConnect][{ctx.guild}]")
     try:
         await ctx.author.voice.channel.connect()
-        return buildRespondEmbed("Hello 👋🏼")
+        return buildMessageEmbed("Hello 👋🏼")
     except discord.ClientException:
         printOn(f"    [tryConnect][{ctx.guild}] : Already in this voice channel")
-        return buildErrorEmbed("I'm already here 🙌🏼")
+        return buildMessageEmbed("I'm already here 🙌🏼")
     except AttributeError:
         printOn(f"    [tryConnect][{ctx.guild}] : Voice channel not existing")
         return buildErrorEmbed("You must be connected to a voice channel")
 
 
-def getVideoData(query):
+def getVideoData(query, guildId, authorId):
+    video_data = None
     if not query.startswith('http'):
-        return [search_youtube(query)]
+        video_data = [search_youtube(query)]
     else:
         try:
-            return is_playlist(query)
-        except youtube_dl.utils.DownloadError as etc:
+            video_data = is_playlist(query)
+        except yt_dlp.utils.DownloadError as etc:
             if etc.args[0].__contains__("ERROR: Incomplete YouTube ID"):
-                return None
+                video_data = None
+
+    if video_data is not None:
+        for video in video_data:
+            if video is not None:
+                video['requestedBy'] = authorId
+                video['requestedIn'] = guildId
+            else:
+                video_data.remove(video)
+        dataUpload(video_data=video_data)
+    if len(video_data) > 0:
+        return video_data
     return None
 
 
-def updateQueue(guild, videoDataList):
+def dataUpload(video_data):
+    for video in video_data:
+        ris = rq.post(url="http://entir.altervista.org/RadioMom/addRequest.php",
+                      data={'guildId': video['requestedIn'], 'authorId': video['requestedBy'], "ytVideoKey": video['id'], "word": dbPassword})
+        printOn(ris.text)
+        if ris.text.__contains__("KO"):
+            printOn(f"[dataUpload] : error while upload")
+
+
+def updateQueue(guild, videoDataList, onTop: bool):
     printOn(f"[udpateQueue][{guild}]")
     tempQueue = []
     try:
@@ -382,7 +501,14 @@ def updateQueue(guild, videoDataList):
     except KeyError:
         printOn(f"    [udpateQueue][{guild}] : Queue not in dict")
 
-    tempQueue.extend(videoDataList)
+    if onTop:
+        tempDataList = []
+        tempDataList.extend(videoDataList)
+        tempDataList.extend(tempQueue)
+        tempQueue = tempDataList
+    else:
+        tempQueue.extend(videoDataList)
+
     queueOfGuilds[guild] = tempQueue
 
     if len(videoDataList) > 1:
@@ -419,7 +545,7 @@ def cleanQueue(guild):
     try:
         tempQueue = queueOfGuilds.pop(guild)
         del tempQueue
-        return buildRespondEmbed("Queue cleared")
+        return buildSuccessEmbed("Queue cleared")
     except KeyError:
         printOn(f"    [cleanQueue][{guild}] : Queue already cleaned")
         return buildErrorEmbed("Queue already empty")
@@ -438,13 +564,13 @@ def pausePlayer(guild):
 def removeItemFromQueue(guild, pos: int):
     printOn(f"[removeItemsOfQueue][{guild}]")
     try:
-        queue = queueOfGuilds[guild]
-        if 1 <= pos <= len(queue):
-            videotrack = queue.pop(pos - 1)
+        queue_list = queueOfGuilds[guild]
+        if 1 <= pos <= len(queue_list):
+            videoTrack = queue_list.pop(pos - 1)
             embed = discord.Embed(title="Removed",
-                                  description=f"[{videotrack['title']}]({videotrack['webpage_url']})",
+                                  description=f"[{videoTrack['title']}]({videoTrack['webpage_url']})",
                                   color=successColor)
-            embed.set_thumbnail(url=videotrack['thumbnail'])
+            embed.set_thumbnail(url=videoTrack['thumbnail'])
             return embed
         else:
             printOn(f"  [removeItemsOfQueue][{guild}] : Out of queue bounds")
@@ -457,11 +583,11 @@ def removeItemFromQueue(guild, pos: int):
 def moveItemsOfQueue(guild, ind_from: int, ind_to: int):
     printOn(f"[moveItemsOfQueue][{guild}]")
     try:
-        queue = queueOfGuilds[guild]
-        if len(queue) >= ind_to >= 1 and len(queue) >= ind_from >= 1 and ind_to != ind_from:
-            videoTrack = queue.pop(ind_from - 1)
-            queue.insert(ind_to - 1, videoTrack)
-            queueOfGuilds[guild] = queue
+        queue_list = queueOfGuilds[guild]
+        if len(queue_list) >= ind_to >= 1 and len(queue_list) >= ind_from >= 1 and ind_to != ind_from:
+            videoTrack = queue_list.pop(ind_from - 1)
+            queue_list.insert(ind_to - 1, videoTrack)
+            queueOfGuilds[guild] = queue_list
             embed = discord.Embed(title="Moved",
                                   description=f"[{videoTrack['title']}]({videoTrack['webpage_url']})",
                                   color=successColor)
@@ -482,6 +608,10 @@ async def disconnectVoice(guild):
     printOn(f"[disconnectVoice][{guild}]")
     try:
         voice = get(bot.voice_clients, guild=guild)
+        try:
+            volumeOfGuilds.pop(guild)
+        except KeyError:
+            printOn(f"      [disconnectVoice][{guild}] : Set volume to default")
         await voice.disconnect(force=True)
     except:
         printOn(f"    [disconnectVoice][{guild}] : Generic error while disconnecting")
@@ -525,11 +655,19 @@ async def handleCommand(reaction, user):
 
 
 def buildErrorEmbed(errorMessage):
-    return discord.Embed(title="Error", colour=errorColor, description=errorMessage)
+    return discord.Embed(title="❗ Error", colour=errorColor, description=errorMessage)
 
 
-def buildRespondEmbed(respondMessage):
-    return discord.Embed(title=respondMessage, colour=successColor)
+def buildSuccessEmbed(respondMessage):
+    return discord.Embed(title="✅", description=respondMessage, colour=successColor)
+
+
+def buildInfoEmbed(infoMessage):
+    return discord.Embed(title="ℹ", description=infoMessage, colour=infoColor)
+
+
+def buildMessageEmbed(message):
+    return discord.Embed(title=message, colour=0xffffff)
 
 
 def buildQueuePlaylistAddEmbed(video_datas):
@@ -540,7 +678,9 @@ def buildQueuePlaylistAddEmbed(video_datas):
         if video_data['duration'] % 60 < 10:
             videoSecPrefix = '0'
         embed.add_field(name=f"{i} - {video_data['title']}",
-                        value=f"[Duration: {int(video_data['duration'] / 60)}:{videoSecPrefix}{video_data['duration'] % 60}]({video_data['webpage_url']})",
+                        value=f">>> `Author: {video_data['channel']}`\n"
+                              f"[`Duration: {int(video_data['duration'] / 60)}:{videoSecPrefix}"
+                              f"{video_data['duration'] % 60}`]({video_data['webpage_url']})",
                         inline=False)
         i += 1
     return embed
@@ -554,62 +694,70 @@ def buildQueueEmbeds(guild_queue):
             videoSecPrefix = '0'
         nextTrackEmbed = discord.Embed(title="Next track:",
                                        description=f"[{nextTrack['title']}]({nextTrack['webpage_url']})",
-                                       color=0x00ff00)
-        nextTrackEmbed.add_field(name='Duration',
-                                 value=f"{int(nextTrack['duration'] / 60)}:{videoSecPrefix}{nextTrack['duration'] % 60}")
+                                       color=infoColor)
         nextTrackEmbed.add_field(name='Requested by',
-                                 value=f"{nextTrack['requestedBy']}")
+                                 value=f"<@{nextTrack['requestedBy']}>")
+        nextTrackEmbed.add_field(name="Author", value=f"`{nextTrack['channel']}`")
+        nextTrackEmbed.add_field(name='Duration',
+                                 value=f"`{int(nextTrack['duration'] / 60)}:{videoSecPrefix}"
+                                       f"{nextTrack['duration'] % 60}`")
         nextTrackEmbed.set_thumbnail(url=nextTrack["thumbnail"])
 
         if len(guild_queue) > 1:
-            embed = discord.Embed(title=f"There are {len(guild_queue)} more elements in queue",
-                                  color=successColor)
+            embed = discord.Embed(title=f"There are {len(guild_queue)-1} more elements in queue",
+                                  color=infoColor)
             for ind in range(1, len(guild_queue)):
                 videoSecPrefix = ""
                 if guild_queue[ind]['duration'] % 60 < 10:
                     videoSecPrefix = '0'
                 embed.add_field(name=f"{ind + 1}° - {guild_queue[ind]['title']}",
-                                value=f"[Duration: {int(guild_queue[ind]['duration'] / 60)}:{videoSecPrefix}{guild_queue[ind]['duration'] % 60}]({guild_queue[ind]['webpage_url']})\n"
-                                      f"Requested by : {guild_queue[ind]['requestedBy']}",
+                                value=f">>> "
+                                      f"`Requested by: `<@{guild_queue[ind]['requestedBy']}>\n"
+                                      f"`Author: {guild_queue[ind]['channel']}`\n"
+                                      f"[`Duration: {int(guild_queue[ind]['duration'] / 60)}:{videoSecPrefix}"
+                                      f"{guild_queue[ind]['duration'] % 60}`]({guild_queue[ind]['webpage_url']})",
                                 inline=False)
             return [nextTrackEmbed, embed]
         return [nextTrackEmbed]
     else:
-        return [discord.Embed(title="Queue is empty", color=successColor)]
+        return [buildInfoEmbed("Queue is empty")]
 
 
 def buildQueueSongAddEmbed(video_data):
     embed = discord.Embed(title=f"Add video to queue",
                           description='[' + video_data['title'] + '](' + video_data['webpage_url'] + ')',
                           color=successColor)
-    embed.add_field(name="Requested by", value=video_data['requestedBy'])
+    embed.add_field(name="Requested by", value=f"<@{video_data['requestedBy']}>")
+    embed.add_field(name="Author", value=f"`{video_data['channel']}`")
     videoSecPrefix = ""
     if video_data['duration'] % 60 < 10:
         videoSecPrefix = '0'
     embed.add_field(name="Duration",
-                    value=f"{int(video_data['duration']/60)}:{videoSecPrefix}{video_data['duration']%60}")
+                    value=f"`{int(video_data['duration'] / 60)}:{videoSecPrefix}{video_data['duration'] % 60}`")
     embed.set_thumbnail(url=video_data['thumbnail'])
     return embed
 
 
-def buildPlayerEmbeds(video_data):
-    embed = discord.Embed(description=f"[{video_data['title']}]({video_data['webpage_url']})", color=0x00ff00)
-    embed.set_author(name="Now Playing:",
+def buildPlayerEmbeds(video_data, volume_val):
+    embed = discord.Embed(title=video_data['title'], url=video_data['webpage_url'], color=infoColor)
+    embed.set_author(name="🎵 Now playing:",
                      icon_url="https://images-ext-1.discordapp.net/external/hC4kckSAAbI8WbaB8ROQkTV4"
                               "-7qxwK8GDg8PqGTK0aI/https/media.tenor.com/IAWKXaW_52sAAAAd/rickroll.gif")
     embed.set_thumbnail(url=video_data['thumbnail'])
-    embed.add_field(name="Requested by", value=video_data['requestedBy'])
+    embed.add_field(name="❔ Requested by", value=f"<@{video_data['requestedBy']}>", inline=False)
+    embed.add_field(name="Author", value=f"`{video_data['channel']}`")
     videoSecPrefix = ""
     if video_data['duration'] % 60 < 10:
         videoSecPrefix = '0'
-    embed.add_field(name="Duration",
-                    value=f"{int(video_data['duration'] / 60)}:{videoSecPrefix}{video_data['duration'] % 60}")
-    embed.add_field(name="Controls:", value="[Pause] [Play] [Skip] [Stop]", inline=False)
+    embed.add_field(name="🕑 Duration",
+                    value=f"`{int(video_data['duration'] / 60)}:{videoSecPrefix}{video_data['duration'] % 60}`")
+    embed.add_field(name="🔊 Volume",
+                    value=f"`{volume_val}%`")
     return embed
 
 
 def buildNotOwnerEmbed():
-    return buildErrorEmbed("You must be connected to the same voice channel to use this command")
+    return buildErrorEmbed("You must be connected to the same voice channel in order to use this command")
 
 
 def search_youtube(query):
@@ -651,14 +799,16 @@ def get_videos_from_playlist(url):
     return video_urls
 
 
-# read token from file token.txt
-with open('token.txt', 'r') as f:
+# read token from file tokenn.txt
+with open('token_test.txt', 'r') as f:
     token = f.readline().replace('\n', '')
     t_token = f"***{token[len(token) - 15:len(token)]}"
     printOn(f"This is token : {t_token}")
-    botIdStr = f.readline()
+    botIdStr = f.readline().replace('\n', '')
     botId = int(botIdStr)
     printOn(f"This is BotId : {botId}")
+    dbPassword = f.readline().replace('\n', '')
+    printOn(f"This is dbPass : *****{dbPassword[len(dbPassword)-5:len(dbPassword)]}")
 
 if __name__ == '__main__':
     bot.run(token)
